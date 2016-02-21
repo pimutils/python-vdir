@@ -10,6 +10,8 @@ Tools to read and write from/to `vdirs
 
 Look at the source code for usage for now.
 
+Based off vdirsyncer's ``filesystem`` storage, see ``VDIRSYNCER_AUTHORS.rst``.
+
 License
 =======
 
