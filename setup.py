@@ -17,7 +17,7 @@ setup(
     author='Markus Unterwaditzer',
     author_email='markus@unterwaditzer.net',
     url='https://github.com/vdirsyncer/python-vdir',
-    license='Public domain/Unlicense',
+    license='MIT',
     packages=['vdir'],
     long_description=open('README.rst').read(),
     install_requires=['atomicwrites'],
