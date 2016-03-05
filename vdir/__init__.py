@@ -220,6 +220,24 @@ class VdirBase(object):
         with atomic_write(fpath, mode='wb', overwrite=True) as f:
             f.write(value.encode(self.encoding))
 
+
+class cached_property(object):
+    '''A read-only @property that is only evaluated once. Only usable on class
+    instances' methods.
+    '''
+    def __init__(self, fget, doc=None):
+        self.__name__ = fget.__name__
+        self.__module__ = fget.__module__
+        self.__doc__ = doc or fget.__doc__
+        self.fget = fget
+
+    def __get__(self, obj, cls):
+        if obj is None:  # pragma: no cover
+            return self
+        obj.__dict__[self.__name__] = result = self.fget(obj)
+        return result
+
+
 class Color(object):
     def __init__(self, x):
         if not x:
@@ -231,7 +249,8 @@ class Color(object):
                              '#ffffff instead of #fff')
         self.raw = x.upper()
 
-    def as_rgb():
+    @cached_property
+    def rgb():
         x = self.raw
 
         r = x[1:3]
