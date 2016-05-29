@@ -10,6 +10,23 @@ __version__ = '0.1.0'
 PY2 = sys.version_info[0] == 2
 
 
+class cached_property(object):
+    '''A read-only @property that is only evaluated once. Only usable on class
+    instances' methods.
+    '''
+    def __init__(self, fget, doc=None):
+        self.__name__ = fget.__name__
+        self.__module__ = fget.__module__
+        self.__doc__ = doc or fget.__doc__
+        self.fget = fget
+
+    def __get__(self, obj, cls):
+        if obj is None:  # pragma: no cover
+            return self
+        obj.__dict__[self.__name__] = result = self.fget(obj)
+        return result
+
+
 def to_unicode(x, encoding='ascii'):
     if not isinstance(x, text_type):
         return x.decode(encoding)
@@ -35,20 +52,31 @@ SAFE_UID_CHARS = ('abcdefghijklmnopqrstuvwxyz'
                   '0123456789_.-+')
 
 
-def _href_safe(ident, safe=SAFE_UID_CHARS):
-    return not bool(set(ident) - set(safe))
+def _href_safe(uid, safe=SAFE_UID_CHARS):
+    return not bool(set(uid) - set(safe))
 
 
-def _generate_href(ident=None, safe=SAFE_UID_CHARS):
-    if not ident or not _href_safe(ident, safe):
+def _generate_href(uid=None, safe=SAFE_UID_CHARS):
+    if not uid or not _href_safe(uid, safe):
         return to_unicode(uuid.uuid4().hex)
     else:
-        return ident
+        return uid
 
 
-def _get_etag_from_file(fpath):
-    '''Get mtime-based etag from a filepath.'''
-    stat = os.stat(fpath)
+def get_etag_from_file(f):
+    '''Get mtime-based etag from a filepath or file-like object.
+
+    This function will flush/sync the file as much as necessary to obtain a
+    correct mtime.
+    '''
+    if hasattr(f, 'read'):
+        f.flush()  # Only this is necessary on Linux
+        if sys.platform == 'win32':
+            os.fsync(f.fileno())  # Apparently necessary on Windows
+        stat = os.fstat(f.fileno())
+    else:
+        stat = os.stat(f)
+
     mtime = getattr(stat, 'st_mtime_ns', None)
     if mtime is None:
         mtime = stat.st_mtime
@@ -56,10 +84,20 @@ def _get_etag_from_file(fpath):
 
 
 class VdirError(IOError):
-    pass
+    def __init__(self, *args, **kwargs):
+        for key, value in kwargs.items():
+            if getattr(self, key, object()) is not None:  # pragma: no cover
+                raise TypeError('Invalid argument: {}'.format(key))
+            setattr(self, key, value)
+
+        super(VdirError, self).__init__(*args)
 
 
 class NotFoundError(VdirError):
+    pass
+
+
+class CollectionNotFoundError(VdirError):
     pass
 
 
@@ -67,14 +105,30 @@ class WrongEtagError(VdirError):
     pass
 
 
-class AlreadyExists(VdirError):
-    pass
+class AlreadyExistingError(VdirError):
+    existing_href = None
 
 
 class Item(object):
     def __init__(self, raw):
         assert isinstance(raw, text_type)
         self.raw = raw
+
+    @cached_property
+    def uid(self):
+        uid = u''
+        lines = iter(self.raw.splitlines())
+        for line in lines:
+            if line.startswith('UID:'):
+                uid += line[4:].strip()
+                break
+
+        for line in lines:
+            if not line.startswith(u' '):
+                break
+            uid += line[1:]
+
+        return uid or None
 
 
 def _normalize_meta_value(value):
@@ -86,6 +140,8 @@ class VdirBase(object):
     default_mode = 0o750
 
     def __init__(self, path, fileext, encoding='utf-8'):
+        if not os.path.isdir(path):
+            raise CollectionNotFoundError(path)
         self.path = path
         self.encoding = encoding
         self.fileext = fileext
@@ -121,21 +177,21 @@ class VdirBase(object):
     def _get_filepath(self, href):
         return os.path.join(self.path, href)
 
-    def _get_href(self, ident):
-        return _generate_href(ident) + self.fileext
+    def _get_href(self, uid):
+        return _generate_href(uid) + self.fileext
 
     def list(self):
         for fname in os.listdir(self.path):
             fpath = os.path.join(self.path, fname)
             if os.path.isfile(fpath) and fname.endswith(self.fileext):
-                yield fname, _get_etag_from_file(fpath)
+                yield fname, get_etag_from_file(fpath)
 
     def get(self, href):
         fpath = self._get_filepath(href)
         try:
             with open(fpath, 'rb') as f:
                 return (Item(f.read().decode(self.encoding)),
-                        _get_etag_from_file(fpath))
+                        get_etag_from_file(fpath))
         except IOError as e:
             if e.errno == errno.ENOENT:
                 raise NotFoundError(href)
@@ -147,7 +203,7 @@ class VdirBase(object):
             raise TypeError('item.raw must be a unicode string.')
 
         try:
-            href = self._get_href(item.ident)
+            href = self._get_href(item.uid)
             fpath, etag = self._upload_impl(item, href)
         except OSError as e:
             if e.errno in (
@@ -160,8 +216,6 @@ class VdirBase(object):
             else:
                 raise
 
-        if self.post_hook:
-            self._run_post_hook(fpath)
         return href, etag
 
     def _upload_impl(self, item, href):
@@ -169,10 +223,10 @@ class VdirBase(object):
         try:
             with atomic_write(fpath, mode='wb', overwrite=False) as f:
                 f.write(item.raw.encode(self.encoding))
-                return fpath, _get_etag_from_file(f.name)
+                return fpath, get_etag_from_file(f.name)
         except OSError as e:
             if e.errno == errno.EEXIST:
-                raise AlreadyExists(existing_href=href)
+                raise AlreadyExistingError(existing_href=href)
             else:
                 raise
 
@@ -180,7 +234,7 @@ class VdirBase(object):
         fpath = self._get_filepath(href)
         if not os.path.exists(fpath):
             raise NotFoundError(item.uid)
-        actual_etag = _get_etag_from_file(fpath)
+        actual_etag = get_etag_from_file(fpath)
         if etag != actual_etag:
             raise WrongEtagError(etag, actual_etag)
 
@@ -189,7 +243,7 @@ class VdirBase(object):
 
         with atomic_write(fpath, mode='wb', overwrite=True) as f:
             f.write(item.raw.encode(self.encoding))
-            etag = _get_etag_from_fileobject(f)
+            etag = get_etag_from_file(f)
 
         return etag
 
@@ -197,7 +251,7 @@ class VdirBase(object):
         fpath = self._get_filepath(href)
         if not os.path.isfile(fpath):
             raise NotFoundError(href)
-        actual_etag = _get_etag_from_file(fpath)
+        actual_etag = get_etag_from_file(fpath)
         if etag != actual_etag:
             raise WrongEtagError(etag, actual_etag)
         os.remove(fpath)
@@ -250,7 +304,7 @@ class Color(object):
         self.raw = x.upper()
 
     @cached_property
-    def rgb():
+    def rgb(self):
         x = self.raw
 
         r = x[1:3]
@@ -262,6 +316,7 @@ class Color(object):
         else:
             raise ValueError('Unable to parse color value: {}'
                              .format(self.value))
+
 
 class ColorMixin(object):
     color_type = Color
