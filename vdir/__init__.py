@@ -261,7 +261,7 @@ class Color(object):
             return int(r, 16), int(g, 16), int(b, 16)
         else:
             raise ValueError('Unable to parse color value: {}'
-                             .format(self.value)
+                             .format(self.value))
 
 class ColorMixin(object):
     color_type = Color
