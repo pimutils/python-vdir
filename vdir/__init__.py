@@ -223,7 +223,7 @@ class VdirBase(object):
         try:
             with atomic_write(fpath, mode='wb', overwrite=False) as f:
                 f.write(item.raw.encode(self.encoding))
-                return fpath, get_etag_from_file(f.name)
+                return fpath, get_etag_from_file(f)
         except OSError as e:
             if e.errno == errno.EEXIST:
                 raise AlreadyExistingError(existing_href=href)
