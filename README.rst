@@ -13,4 +13,4 @@ Look at the source code for usage for now.
 License
 =======
 
-The ``vdir`` package is licensed under the public domain. See ``LICENSE``.
+The ``vdir`` package is licensed under MIT/Expat. See ``LICENSE``.
